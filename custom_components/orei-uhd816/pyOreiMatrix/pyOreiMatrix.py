@@ -3,6 +3,7 @@ import aiohttp
 import json
 import logging
 from pyOreiMatrixEnums import EDID
+import queue
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -71,6 +72,8 @@ class OreiMatrixAPI:
     __beep: bool
     __panel_lock: bool
     __callbacks: list[callable]
+    __tcpSendQueue: queue.Queue
+    __tcpRecvBuffer: str
 
     def __init__(self, host: str, webPort: int = 80) -> None:
         self.__model = None
@@ -84,6 +87,8 @@ class OreiMatrixAPI:
         self.__beep = False
         self.__panel_lock = False
         self.__callbacks = []
+        self.__tcpSendQueue = queue.Queue()
+        self.__tcpRecvBuffer = ""
 
     @property
     def model(self) -> int:
@@ -232,8 +237,96 @@ class OreiMatrixAPI:
     def SubscribeToChanges(self, callback) -> None:
         self.__callbacks.append(callback)
 
+        if len(self.__callbacks) == 1:
+            asyncio.create_task( self.__Connect_via_tcp() )
+
     def UnsubscribeFromChanges(self, callback) -> None:
         self.__callbacks.remove(callback)
+
+        if len(self.__callbacks) == 0:
+            asyncio.create_task( self.__Disconnect_tcp() )
+
+    async def __Connect_via_tcp(self) -> None:
+        retry_delay = 5
+
+        while True:
+            try:
+                _LOGGER.info(f"TCP:Connecting to {self.__host}:{self.__tcpPort}")
+                reader, writer = await asyncio.open_connection(self.__host, self.__tcpPort)
+            except (ConnectionRefusedError, OSError) as e:
+                _LOGGER.info(f"TCP:Connection failed: {e}. Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+            else:
+                await self.__Handle_tcp_connection(reader, writer)
+                _LOGGER.info(f"TCP:Reconnecting to {self.__host}:{self.__tcpPort} in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+
+    def __TcpSend(self, m: str) -> None:
+        self.__tcpSendQueue.put(f"{m}!\r\n")
+
+    def __TcpReceive(self, m: str)-> None:
+
+        delim = '\r\n'
+        delimLen = len(delim)
+
+        if len(self.__tcpRecvBuffer)>0:
+            m = self.__tcpRecvBuffer + m
+            self.__tcpRecvBuffer = ""
+
+        index = m.rfind(delim)
+
+        if index < len(m)-delimLen:
+            self.__tcpRecvBuffer = m[index+delimLen:]
+            m = m[:index]
+
+        lines = m.split(delim)
+
+        for line in lines:
+            if len(line) > 0:
+                _LOGGER.info(f"TCP:<--{line!r}")
+
+    async def __Handle_tcp_connection(self, reader, writer):
+        while self.__tcpSendQueue.qsize() > 0:
+            self.__tcpSendQueue.get()
+
+        self.__tcpRecvBuffer = ""
+
+        self.__TcpSend("r status")
+
+        addr = writer.get_extra_info('peername')
+        _LOGGER.info(f"TCP:Connected by {addr!r}")
+        try:
+            while True:
+
+                try:
+                    data = await asyncio.wait_for(reader.read(1024), timeout=0.5)
+
+                    if not data:
+                        break
+
+                    message = data.decode()
+                    self.__TcpReceive(message)
+
+                except TimeoutError:
+                    pass
+
+                while self.__tcpSendQueue.qsize() > 0:
+                    writer.write( self.__tcpSendQueue.get().encode() )
+                    await writer.drain()
+
+        except Exception as e:
+            _LOGGER.info(f"TCP:Error: {e}")
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            _LOGGER.info(f"TCP:Disconnected from {addr!r}")
+
+    async def __Disconnect_tcp(self) -> None:
+        _LOGGER.info(f"TCP:Disconnecting from {self.__host}:{self.__tcpPort}")
+        while self.__tcpSendQueue.qsize() > 0:
+            self.__tcpSendQueue.get()
+
+        self.__tcpRecvBuffer = ""
 
     def __NotifySubscribers(self, changed_object) -> None:
         for s in self.__callbacks:
