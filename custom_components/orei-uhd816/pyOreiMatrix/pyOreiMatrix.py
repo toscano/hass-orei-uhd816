@@ -4,6 +4,7 @@ import json
 import logging
 from pyOreiMatrixEnums import EDID
 import queue
+import time
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ class OreiMatrixAPI:
     __callbacks: list[callable]
     __tcpSendQueue: queue.Queue
     __tcpRecvBuffer: str
+    __tcpDisconnect: bool
 
     def __init__(self, host: str, webPort: int = 80) -> None:
         self.__model = None
@@ -89,6 +91,7 @@ class OreiMatrixAPI:
         self.__callbacks = []
         self.__tcpSendQueue = queue.Queue()
         self.__tcpRecvBuffer = ""
+        self.__tcpDisconnect = True
 
     @property
     def model(self) -> int:
@@ -248,8 +251,9 @@ class OreiMatrixAPI:
 
     async def __Connect_via_tcp(self) -> None:
         retry_delay = 5
+        self.__tcpDisconnect = False
 
-        while True:
+        while not self.__tcpDisconnect:
             try:
                 _LOGGER.info(f"TCP:Connecting to {self.__host}:{self.__tcpPort}")
                 reader, writer = await asyncio.open_connection(self.__host, self.__tcpPort)
@@ -258,8 +262,10 @@ class OreiMatrixAPI:
                 await asyncio.sleep(retry_delay)
             else:
                 await self.__Handle_tcp_connection(reader, writer)
-                _LOGGER.info(f"TCP:Reconnecting to {self.__host}:{self.__tcpPort} in {retry_delay} seconds...")
-                await asyncio.sleep(retry_delay)
+
+                if not self.__tcpDisconnect:
+                    _LOGGER.info(f"TCP:Reconnecting to {self.__host}:{self.__tcpPort} in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
 
     def __TcpSend(self, m: str) -> None:
         self.__tcpSendQueue.put(f"{m}!\r\n")
@@ -283,7 +289,7 @@ class OreiMatrixAPI:
 
         for line in lines:
             if len(line) > 0:
-                _LOGGER.info(f"TCP:<--{line!r}")
+                _LOGGER.debug(f"TCP:<--{line!r}")
 
     async def __Handle_tcp_connection(self, reader, writer):
         while self.__tcpSendQueue.qsize() > 0:
@@ -291,12 +297,14 @@ class OreiMatrixAPI:
 
         self.__tcpRecvBuffer = ""
 
+        lastReceived = time.time()
+        heartbeat = 0
         self.__TcpSend("r status")
 
         addr = writer.get_extra_info('peername')
         _LOGGER.info(f"TCP:Connected by {addr!r}")
         try:
-            while True:
+            while not self.__tcpDisconnect:
 
                 try:
                     data = await asyncio.wait_for(reader.read(1024), timeout=0.5)
@@ -304,14 +312,30 @@ class OreiMatrixAPI:
                     if not data:
                         break
 
+                    heartbeat = 0
+                    lastReceived = time.time()
+
                     message = data.decode()
                     self.__TcpReceive(message)
 
                 except TimeoutError:
                     pass
 
+                now = time.time()
+
+                if heartbeat > 2:
+                    _LOGGER.warning("Missed HEARTBEAT")
+                    break
+                elif now - lastReceived > 10:
+                    if heartbeat == 0:
+                        self.__TcpSend("r power")
+                        lastReceived = now
+                    heartbeat += 1
+
                 while self.__tcpSendQueue.qsize() > 0:
-                    writer.write( self.__tcpSendQueue.get().encode() )
+                    data = self.__tcpSendQueue.get()
+                    _LOGGER.debug(f"TCP:-->{data!r}")
+                    writer.write( data.encode() )
                     await writer.drain()
 
         except Exception as e:
@@ -327,6 +351,7 @@ class OreiMatrixAPI:
             self.__tcpSendQueue.get()
 
         self.__tcpRecvBuffer = ""
+        self.__tcpDisconnect = True
 
     def __NotifySubscribers(self, changed_object) -> None:
         for s in self.__callbacks:
