@@ -5,6 +5,8 @@ import sys
 
 _LOGGER = logging.getLogger(__name__)
 
+def MatrixChangeHandler(changedObject):
+    _LOGGER.info(f"<--{changedObject}")
 
 async def main():
 
@@ -25,6 +27,7 @@ async def main():
 
 
     initializeLogging()
+
     api = OreiMatrixAPI(host = "192.168.20.19")
 
     _LOGGER.info(f"Starting tests on {api.host} tcpPort:{api.tcpPort} webPort:{api.webPort}...")
@@ -42,18 +45,23 @@ async def main():
         _LOGGER.error("No Matrix Inputs found.")
         exit(200)
 
-    for input in await api.Inputs:
-        _LOGGER.info(f"   {input}")
+    #for input in await api.Inputs:
+    #    _LOGGER.info(f"   {input}")
 
-    _LOGGER.info("--")
+    #_LOGGER.info("--")
 
     if len(await api.Outputs) < 1:
         _LOGGER.error("No Matrix Outputs found.")
         exit(300)
 
-    for output in await api.Outputs:
-        _LOGGER.info(f"   {output}")
+    #for output in await api.Outputs:
+    #    _LOGGER.info(f"   {output}")
 
+    _LOGGER.info("Waiting for changes...")
+
+    api.SubscribeToChanges(MatrixChangeHandler)
+    await asyncio.sleep(20)
+    api.UnsubscribeFromChanges(MatrixChangeHandler)
 
     _LOGGER.info("Success.")
 

@@ -3,8 +3,6 @@ import aiohttp
 import json
 import logging
 from pyOreiMatrixEnums import EDID
-import time
-import urllib.request
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -72,6 +70,7 @@ class OreiMatrixAPI:
     __power: bool
     __beep: bool
     __panel_lock: bool
+    __callbacks: list[callable]
 
     def __init__(self, host: str, webPort: int = 80) -> None:
         self.__model = None
@@ -84,7 +83,7 @@ class OreiMatrixAPI:
         self.__power = False
         self.__beep = False
         self.__panel_lock = False
-        pass
+        self.__callbacks = []
 
     @property
     def model(self) -> int:
@@ -161,8 +160,10 @@ class OreiMatrixAPI:
             rVal.append(MatrixInput(self, idx+1, name, active, visible, edid ))
             idx+=1
 
-        # TODO: Check these and Notify
         self.__inputs = rVal
+
+        for input in self.__inputs:
+            self.__NotifySubscribers(input)
 
     async def RefreshOutputs(self) -> None:
         data = await self.__web_cmd(REQ_GET_OUTPUTS)
@@ -192,8 +193,11 @@ class OreiMatrixAPI:
             rVal.append(MatrixOutput(self, idx+1, name, sourceId, visible, connected ))
             idx+=1
 
-        # TODO: Check these and Notify
         self.__outputs = rVal
+
+        for output in self.__outputs:
+            self.__NotifySubscribers(output)
+
 
     async def RefreshConfig(self) -> None:
         data = await self.__web_cmd(REQ_GET_SYSTEM)
@@ -201,7 +205,6 @@ class OreiMatrixAPI:
         if data is None:
             return
 
-        # TODO: Check these and Notify
         if "lock" in data:
             self.__update_panel_lock( data["lock"]==1)
 
@@ -226,21 +229,30 @@ class OreiMatrixAPI:
 
         return self.__outputs
 
+    def SubscribeToChanges(self, callback) -> None:
+        self.__callbacks.append(callback)
+
+    def UnsubscribeFromChanges(self, callback) -> None:
+        self.__callbacks.remove(callback)
+
+    def __NotifySubscribers(self, changed_object) -> None:
+        for s in self.__callbacks:
+            s(changed_object)
+
     def __update_power(self, newVal: bool) -> None:
         if not self.__power == newVal:
             self.__power = newVal
-            _LOGGER.warning("# TODO: Notify Subscribers on Power change") #
+            self.__NotifySubscribers(self)
 
     def __update_panel_lock(self, newVal: bool) -> None:
         if not self.__panel_lock == newVal:
             self.__panel_lock = newVal
-            _LOGGER.warning("# TODO: Notify Subscribers on panel_lock change") #
+            self.__NotifySubscribers(self)
 
     def __update_beep(self, newVal: bool) -> None:
         if not self.__beep == newVal:
             self.__beep = newVal
-            _LOGGER.warning("# TODO: Notify Subscribers on beep change") #
-
+            self.__NotifySubscribers(self)
 
     async def __web_cmd(self, cmd):
         url =  f"http://{self.__host}/cgi-bin/instr"
@@ -275,36 +287,6 @@ class OreiMatrixAPI:
                 _LOGGER.error(f"Error connecting to the Matrix: {e}")
 
         return None
-
-
-    def __web_cmd_old(self, cmd):
-        resp_data = None
-
-        with self.__lock:
-            for i in range(self.__maxRetries):
-                req = urllib.request.Request(
-                    f"http://{self.__host}/cgi-bin/instr",
-                    data=json.dumps(cmd).encode("utf-8"),
-                    headers={"Accept": "application/json"},
-                    method="POST",
-                )
-                try:
-                    with urllib.request.urlopen(req, timeout=5) as r:
-                        if r.getcode() == 200:
-                            resp_data = json.loads(r.read().decode("utf-8"))
-
-                            if "power" in resp_data:
-                                self.__update_power(resp_data["power"]==1)
-
-                            return resp_data
-                except Exception as e:
-                    _LOGGER.error(f"Error connecting to the Matrix: {e}")
-
-                if i < self.__maxRetries - 1:
-                    time.sleep(0.5)
-                else:
-                    _LOGGER.error(f"Failed to connect to the Matrix after {self.__maxRetries} attempts")
-
 
     def __str__(self):
         return f"api: model={self.model} tcpPort:{self.tcpPort} power:{self.__power} lock:{self.__panel_lock} beep:{self.__beep}"
