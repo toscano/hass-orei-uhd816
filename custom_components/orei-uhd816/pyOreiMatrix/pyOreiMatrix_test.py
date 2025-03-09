@@ -30,7 +30,7 @@ async def main():
 
     api = OreiMatrixAPI(host = "192.168.20.19")
 
-    _LOGGER.info(f"Starting tests on {api.host} tcpPort:{api.tcpPort} webPort:{api.webPort}...")
+    _LOGGER.info(f"Starting tests on {api.host}...")
 
     if not await api.Validate():
         exit(100)
@@ -60,7 +60,7 @@ async def main():
     _LOGGER.info("Waiting for changes...")
 
     api.SubscribeToChanges(MatrixChangeHandler)
-    await asyncio.sleep(60)
+    await asyncio.sleep(10)
     api.UnsubscribeFromChanges(MatrixChangeHandler)
 
     _LOGGER.info("Success.")

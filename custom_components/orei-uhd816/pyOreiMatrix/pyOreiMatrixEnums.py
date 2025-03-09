@@ -1,5 +1,10 @@
 from enum import IntEnum
 
+class SystemPowerState(IntEnum):
+    Off = 0,
+    Booting = 1,
+    On = 2
+
 class DescriptiveIntEnum(IntEnum):
     def __new__(cls, value, description=None):
         member = int.__new__(cls, value)
