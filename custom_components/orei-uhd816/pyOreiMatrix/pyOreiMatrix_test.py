@@ -60,7 +60,7 @@ async def main():
     _LOGGER.info("Waiting for changes...")
 
     api.SubscribeToChanges(MatrixChangeHandler)
-    await asyncio.sleep(20)
+    await asyncio.sleep(60)
     api.UnsubscribeFromChanges(MatrixChangeHandler)
 
     _LOGGER.info("Success.")

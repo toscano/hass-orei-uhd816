@@ -10,6 +10,7 @@
         "homeassistant",
         "inname",
         "levelname",
+        "macaddress",
         "OREI",
         "peername",
         "tcpport",

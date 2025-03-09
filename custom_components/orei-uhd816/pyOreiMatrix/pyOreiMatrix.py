@@ -8,6 +8,7 @@ import time
 
 _LOGGER = logging.getLogger(__name__)
 
+REQ_GET_STATUS  = {"comhead":"get status","language":0}
 REQ_GET_NETWORK = {"comhead":"get network","language":0}
 REQ_GET_INPUTS  = {"comhead":"get input status","language":0}
 REQ_GET_OUTPUTS = {"comhead":"get output status","language":0}
@@ -66,6 +67,8 @@ class OreiMatrixAPI:
     __host: str
     __tcpPort: int
     __webPort: int
+    __model: str
+    __macAddress: str
     __maxRetries: int
     __inputs: list[MatrixInput]
     __outputs: list[MatrixOutput]
@@ -79,6 +82,7 @@ class OreiMatrixAPI:
 
     def __init__(self, host: str, webPort: int = 80) -> None:
         self.__model = None
+        self.__macAddress = None
         self.__host = host
         self.__tcpPort = 8000 # Updated from default to actual in Validate
         self.__webPort = webPort
@@ -94,11 +98,15 @@ class OreiMatrixAPI:
         self.__tcpDisconnect = True
 
     @property
-    def model(self) -> int:
+    def MAC(self) -> str:
+        return self.__macAddress
+
+    @property
+    def model(self) -> str:
         return self.__model
 
     @property
-    def host(self) -> int:
+    def host(self) -> str:
         return self.__host
 
     @property
@@ -124,23 +132,36 @@ class OreiMatrixAPI:
 
 
     async def Validate(self) -> bool:
+        data = await self.__web_cmd(REQ_GET_STATUS)
+        if data is None:
+            _LOGGER.error(f"Matrix status not found at {self.host}:{self.webPort}.")
+            return False
+
+        if "macaddress" not in data:
+            _LOGGER.error("Could not determine matrix MAC address.")
+            return False
+        else:
+            self.__macAddress = data["macaddress"]
+
+        if "model" in data:
+            self.__model = data["model"]
+
         data = await self.__web_cmd(REQ_GET_NETWORK)
         if data is None:
             _LOGGER.error(f"Matrix not found at {self.host}:{self.webPort}.")
             return False
 
         if "tcpport" not in data:
-            _LOGGER.warning(f"Could not determine matrix tcpPort='{self.__tcpPort}'. Continuing.")
+            _LOGGER.warning(f"Could not determine matrix tcpPort='{self.__tcpPort}'. Continuing with default.")
+        else:
+            self.__tcpPort = data["tcpport"]
 
-        if "model" not in data or data["model"] not in SUPPORTED_MODELS:
-            if "model" in data:
-                self.__model = data["model"]
+        if "model" in data:
+            self.__model = data["model"]
 
+        if self.__model not in SUPPORTED_MODELS:
             _LOGGER.error(f"Unsupported matrix model='{self.model}'.")
             return False
-
-        self.__tcpPort = data["tcpport"]
-        self.__model = data["model"]
 
         return True
 
@@ -255,7 +276,7 @@ class OreiMatrixAPI:
 
         while not self.__tcpDisconnect:
             try:
-                _LOGGER.info(f"TCP:Connecting to {self.__host}:{self.__tcpPort}")
+                _LOGGER.debug(f"TCP:Connecting to {self.__host}:{self.__tcpPort}")
                 reader, writer = await asyncio.open_connection(self.__host, self.__tcpPort)
             except (ConnectionRefusedError, OSError) as e:
                 _LOGGER.info(f"TCP:Connection failed: {e}. Retrying in {retry_delay} seconds...")
@@ -264,7 +285,7 @@ class OreiMatrixAPI:
                 await self.__Handle_tcp_connection(reader, writer)
 
                 if not self.__tcpDisconnect:
-                    _LOGGER.info(f"TCP:Reconnecting to {self.__host}:{self.__tcpPort} in {retry_delay} seconds...")
+                    _LOGGER.info(f"TCP:Connection broken: Retrying in {retry_delay} seconds...")
                     await asyncio.sleep(retry_delay)
 
     def __TcpSend(self, m: str) -> None:
@@ -302,12 +323,12 @@ class OreiMatrixAPI:
         self.__TcpSend("r status")
 
         addr = writer.get_extra_info('peername')
-        _LOGGER.info(f"TCP:Connected by {addr!r}")
+        _LOGGER.info(f"TCP:Connected to {addr!r}")
         try:
             while not self.__tcpDisconnect:
 
                 try:
-                    data = await asyncio.wait_for(reader.read(1024), timeout=0.5)
+                    data = await asyncio.wait_for(reader.read(1024), timeout=0.1)
 
                     if not data:
                         break
@@ -324,7 +345,7 @@ class OreiMatrixAPI:
                 now = time.time()
 
                 if heartbeat > 2:
-                    _LOGGER.warning("Missed HEARTBEAT")
+                    _LOGGER.warning("TCP:Missed HEARTBEAT")
                     break
                 elif now - lastReceived > 10:
                     if heartbeat == 0:
@@ -346,7 +367,7 @@ class OreiMatrixAPI:
             _LOGGER.info(f"TCP:Disconnected from {addr!r}")
 
     async def __Disconnect_tcp(self) -> None:
-        _LOGGER.info(f"TCP:Disconnecting from {self.__host}:{self.__tcpPort}")
+        _LOGGER.debug(f"TCP:Disconnecting from {self.__host}:{self.__tcpPort}")
         while self.__tcpSendQueue.qsize() > 0:
             self.__tcpSendQueue.get()
 
@@ -394,20 +415,20 @@ class OreiMatrixAPI:
 
                             return jsonObj
 
-                        _LOGGER.warning(f"Received STATUS={status} while POSTING {cmd} to {url}")
+                        _LOGGER.warning(f"HTTP:Received STATUS={status} while POSTING {cmd} to {url}")
 
                         if i < self.__maxRetries - 1:
                             asyncio.sleep(0.5)
                         else:
-                            _LOGGER.error(f"Failed to connect to the Matrix after {self.__maxRetries} attempts")
+                            _LOGGER.error(f"HTTP:Failed to connect to the Matrix after {self.__maxRetries} attempts")
 
             except Exception as e:
-                _LOGGER.error(f"Error connecting to the Matrix: {e}")
+                _LOGGER.error(f"HTTP:Error connecting to the Matrix: {e}")
 
         return None
 
     def __str__(self):
-        return f"api: model={self.model} tcpPort:{self.tcpPort} power:{self.__power} lock:{self.__panel_lock} beep:{self.__beep}"
+        return f"api: MAC={self.MAC} model={self.model} tcpPort:{self.tcpPort} power:{self.__power} lock:{self.__panel_lock} beep:{self.__beep}"
 
     def __repr__(self):
-        return f"api: model={self.model} tcpPort:{self.tcpPort} power:{self.__power} lock:{self.__panel_lock} beep:{self.__beep}"
+        return f"api: MAC={self.MAC} model={self.model} tcpPort:{self.tcpPort} power:{self.__power} lock:{self.__panel_lock} beep:{self.__beep}"
