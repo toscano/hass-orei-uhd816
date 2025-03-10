@@ -6,7 +6,16 @@ import sys
 _LOGGER = logging.getLogger(__name__)
 
 def MatrixChangeHandler(changedObject):
-    _LOGGER.info(f"<--{changedObject}")
+    _LOGGER.info(f"CHANGE: {changedObject}")
+
+async def wait_for_true(condition_func, check_interval=0.1, timeout=None):
+    start_time = asyncio.get_event_loop().time()
+    while True:
+        if condition_func():
+            return True
+        if timeout is not None and (asyncio.get_event_loop().time() - start_time) > timeout:
+            return False
+        await asyncio.sleep(check_interval)
 
 async def main():
 
@@ -38,6 +47,8 @@ async def main():
     await api.RefreshAll()
     _LOGGER.info(f"{api}")
 
+    api.SubscribeToChanges(MatrixChangeHandler)
+
 
     _LOGGER.info("--")
 
@@ -56,11 +67,45 @@ async def main():
 
     #for output in await api.Outputs:
     #    _LOGGER.info(f"   {output}")
+    api.PowerOn()
+    if not await wait_for_true(lambda: api.power, timeout=10):
+        _LOGGER.error("Power on failed.")
+        exit(400)
+
+    #await asyncio.sleep(3)
+
+    api.PanelLockOn()
+    if not await wait_for_true(lambda: api.panel_lock, timeout=10):
+        _LOGGER.error("LockOn failed.")
+        exit(400)
+
+    api.PanelLockOff()
+    if not await wait_for_true(lambda: not api.panel_lock, timeout=10):
+        _LOGGER.error("LockOff failed.")
+        exit(400)
+
+    api.BeepOn()
+    if not await wait_for_true(lambda: api.beep, timeout=10):
+        _LOGGER.error("BeepOn failed.")
+        exit(400)
+
+    api.BeepOff()
+    if not await wait_for_true(lambda: not api.beep, timeout=10):
+        _LOGGER.error("BeepOff failed.")
+        exit(400)
+
 
     _LOGGER.info("Waiting for changes...")
 
-    api.SubscribeToChanges(MatrixChangeHandler)
-    await asyncio.sleep(10)
+
+    await asyncio.sleep(20)
+
+
+    api.PowerOff()
+    if not await wait_for_true(lambda: not api.power, timeout=10):
+        _LOGGER.error("Power off failed.")
+        exit(400)
+
     api.UnsubscribeFromChanges(MatrixChangeHandler)
 
     _LOGGER.info("Success.")

@@ -1,9 +1,11 @@
 from enum import IntEnum
 
-class SystemPowerState(IntEnum):
-    Off = 0,
-    Booting = 1,
-    On = 2
+class TcpConnectedState(IntEnum):
+    Disconnected = 0,
+    Disconnecting = 1,
+    ConnectRequested = 2
+    Connecting = 3,
+    Connected = 4
 
 class DescriptiveIntEnum(IntEnum):
     def __new__(cls, value, description=None):

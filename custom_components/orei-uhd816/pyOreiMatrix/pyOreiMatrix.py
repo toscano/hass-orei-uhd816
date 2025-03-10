@@ -2,7 +2,7 @@ import asyncio
 import aiohttp
 import json
 import logging
-from pyOreiMatrixEnums import EDID, SystemPowerState
+from pyOreiMatrixEnums import EDID, TcpConnectedState
 import queue
 import time
 
@@ -15,6 +15,16 @@ REQ_GET_OUTPUTS = {"comhead":"get output status","language":0}
 REQ_GET_SYSTEM  = {"comhead":"get system status","language":0}
 
 SUPPORTED_MODELS = ['HDP-MXB88D70M']
+
+TCP_BEEP_ON_COMMAND     = "s beep 1"
+TCP_BEEP_OFF_COMMAND    = "s beep 0"
+TCP_COMMAND_DELIMITER   = "!\r\n"
+TCP_GETSTATUS_COMMAND   = "r status"
+TCP_HEARTBEAT_COMMAND   = "r power"
+TCP_LOCK_ON_COMMAND     = "s lock 1"
+TCP_LOCK_OFF_COMMAND    = "s lock 0"
+TCP_POWER_ON_COMMAND    = "s power 1"
+TCP_POWER_OFF_COMMAND   = "s power 0"
 
 class MatrixInput:
     __api = None
@@ -69,7 +79,7 @@ class OreiMatrixAPI:
     __macAddress: str
     __host: str
     __tcpPort: int
-    __power: SystemPowerState
+    __power: bool
     __beep: bool
     __panel_lock: bool
     __ipMode : str
@@ -77,7 +87,8 @@ class OreiMatrixAPI:
     __subnetMask: str
     __ipGateway: str
     __firmware: str
-    __connected: bool
+    __tcpConnectState: TcpConnectedState
+    __tcpSendHoldbackTime: float
 
     __inputs: list[MatrixInput]
     __outputs: list[MatrixOutput]
@@ -96,7 +107,7 @@ class OreiMatrixAPI:
         self.__macAddress = None
         self.__host = host
         self.__tcpPort = 8000 # Updated from default to actual in Validate
-        self.__power = SystemPowerState.Off
+        self.__power = False
         self.__beep = False
         self.__panel_lock = False
         self.__ipMode  = ""
@@ -104,7 +115,8 @@ class OreiMatrixAPI:
         self.__subnetMask = ""
         self.__ipGateway = ""
         self.__firmware = ""
-        self.__connected = False
+        self.__tcpConnectState = TcpConnectedState.Disconnected
+        self.__tcpSendHoldbackTime = 0
 
         self.__inputs = None
         self.__outputs = None
@@ -156,11 +168,11 @@ class OreiMatrixAPI:
 
     @property
     def power(self) -> bool:
-        return self.__power == SystemPowerState.On
+        return self.__power
 
-    def __set_power(self, newVal: SystemPowerState) -> None:
+    def __set_power(self, newVal: bool) -> None:
         if not self.__power == newVal:
-            _LOGGER.info(f"Power changing from {self.__power.name} to !r{newVal.name!r}.")
+            _LOGGER.info(f"Power changing from {self.__power} to {newVal}.")
             self.__power = newVal
             self.__NotifySubscribers(self)
 
@@ -176,7 +188,7 @@ class OreiMatrixAPI:
 
     @property
     def panel_lock(self) -> bool:
-        return self.__lock
+        return self.__panel_lock
 
     def __set_panel_lock(self, newVal: bool) -> None:
         if not self.__panel_lock == newVal:
@@ -235,14 +247,46 @@ class OreiMatrixAPI:
             self.__NotifySubscribers(self)
 
     @property
-    def connected(self) -> bool:
-        return self.__connected
+    def tcpConnectState(self) -> TcpConnectedState:
+        return self.__tcpConnectState
 
-    def __set_connected(self, newVal: str) -> None:
-        if not self.__connected == newVal:
-            _LOGGER.info(f"connected changing from {self.__connected!r} to {newVal!r}.")
-            self.__connected = newVal
+    def __set_tcpConnectState(self, newVal: TcpConnectedState) -> None:
+        if not self.__tcpConnectState == newVal:
+            _LOGGER.info(f"connected changing from {self.__tcpConnectState!r} to {newVal!r}.")
+            self.__tcpConnectState = newVal
             self.__NotifySubscribers(self)
+
+    def __set_tcpSendHoldbackTime(self, newVal: float, reason: str) -> None:
+        if newVal==0:
+            if not self.__tcpSendHoldbackTime == 0:
+                _LOGGER.debug(f"sendHoldBack changing to {newVal} due to '{reason}'.")
+                self.__tcpSendHoldbackTime = newVal
+        else:
+            _LOGGER.debug(f"sendHoldBack changing to time.time()+{newVal} due to '{reason}'.")
+            self.__tcpSendHoldbackTime = time.time() + newVal
+
+    # COMMANDS - BEGIN
+    def PowerOn(self) -> None:
+        self.__TcpVerifyConnectionState()
+        self.__power_on_requested = True
+
+    def PowerOff(self) -> None:
+        self.__TcpSendEnqueue(TCP_POWER_OFF_COMMAND)
+
+    def PanelLockOn(self) -> None:
+        self.__TcpSendEnqueue(TCP_LOCK_ON_COMMAND)
+
+    def PanelLockOff(self) -> None:
+        self.__TcpSendEnqueue(TCP_LOCK_OFF_COMMAND)
+
+    def BeepOn(self) -> None:
+        self.__TcpSendEnqueue(TCP_BEEP_ON_COMMAND)
+
+    def BeepOff(self) -> None:
+        self.__TcpSendEnqueue(TCP_BEEP_OFF_COMMAND)
+
+
+    # COMMANDS - END
 
 
     def __SetInputProperty(self, inputId: int, name: str, val) -> bool:
@@ -337,11 +381,11 @@ class OreiMatrixAPI:
             inputId = data["allsource"][idx]
             visible = (allDefaultNames or not hasDefaultName)
 
-            connected = data["allconnect"][idx]==1
+            active = data["allconnect"][idx]==1
             if "allhdbtconnect" in data:
-                connected = connected or (data["allhdbtconnect"][idx]==1)
+                active = active or (data["allhdbtconnect"][idx]==1)
 
-            rVal.append(MatrixOutput(self, idx+1, name, inputId, visible, connected ))
+            rVal.append(MatrixOutput(self, idx+1, name, inputId, visible, active ))
             idx+=1
 
         self.__outputs = rVal
@@ -384,7 +428,8 @@ class OreiMatrixAPI:
         self.__callbacks.append(callback)
 
         if len(self.__callbacks) == 1:
-            asyncio.create_task( self.__Connect_via_tcp() )
+            self.__set_tcpConnectState(TcpConnectedState.ConnectRequested)
+            asyncio.create_task( self.__Connect_tcp() )
 
     def UnsubscribeFromChanges(self, callback) -> None:
         self.__callbacks.remove(callback)
@@ -392,7 +437,13 @@ class OreiMatrixAPI:
         if len(self.__callbacks) == 0:
             asyncio.create_task( self.__Disconnect_tcp() )
 
-    async def __Connect_via_tcp(self) -> None:
+    async def __Connect_tcp(self) -> None:
+
+        if self.__tcpConnectState in [TcpConnectedState.Connected, TcpConnectedState.Connecting]:
+            return
+
+        self.__set_tcpConnectState( TcpConnectedState.Connecting )
+
         retry_delay = 5
         self.__tcpDisconnect = False
 
@@ -410,11 +461,28 @@ class OreiMatrixAPI:
                     _LOGGER.info(f"TCP:Connection broken: Retrying in {retry_delay} seconds...")
                     await asyncio.sleep(retry_delay)
 
-    def __TcpSend(self, m: str) -> None:
-        self.__tcpSendQueue.put(f"{m}!\r\n")
+
+    def __TcpVerifyConnectionState(self) -> None:
+        if self.__tcpConnectState == TcpConnectedState.Disconnected:
+            _LOGGER.error("You MUST SubscribeToChanges() prior to issuing commands.")
+            raise BrokenPipeError()
+
+    def __TcpSendEnqueue(self, m: str, verifyConnection: bool = True) -> None:
+        if verifyConnection:
+            self.__TcpVerifyConnectionState()
+
+        self.__tcpSendQueue.put(f"{m}{TCP_COMMAND_DELIMITER}")
+
+    async def __TcpSendDirect(self, writer, m: str, drain: bool = True) -> None:
+        data = f"{m}{TCP_COMMAND_DELIMITER}"
+        _LOGGER.debug(f"TCP:-->{data!r}")
+        writer.write( data.encode() )
+
+        if drain:
+            await writer.drain()
+
 
     def __TcpReceive(self, m: str)-> None:
-
         delim = '\r\n'
         delimLen = len(delim)
 
@@ -460,13 +528,16 @@ class OreiMatrixAPI:
 
         elif len(splits) == 2:
             # power on
-            if splits[0] == "power" and splits[1] == "on":
+            if splits[0].lower() == "power" and splits[1] == "on":
+                if not self.__power:
+                    self.__set_tcpSendHoldbackTime(5, line)
+                    self.__set_power(True)
+
                 didSetProperty = True
-                self.__set_power(SystemPowerState.On)
             # power off
-            elif splits[0] == "power" and splits[1] == "off":
+            elif splits[0].lower() == "power" and splits[1] == "off":
                 didSetProperty = True
-                self.__set_power(SystemPowerState.Off)
+                self.__set_power(False)
             # beep off
             elif splits[0] == "beep":
                 didSetProperty = True
@@ -482,17 +553,20 @@ class OreiMatrixAPI:
             # Safe to ignore
             #   TCP/IP port=8000
             #   Telnet port=23
+            elif splits[0] in ['TCP/IP', 'Telnet'] and splits[1].startswith('port'):
+                ignored = True
+            # Safe to ignore
             #   Mac address:6C:DF:FB:04:79:9E
-            elif splits[0] in ['TCP/IP', 'Telnet', 'Mac'] and \
-                (splits[1].startswith('port') or splits[1].startswith('address')):
+            elif line.startswith('Mac address'):
                 ignored = True
             # System Initializing...
             elif line == "System Initializing...":
-                self.__set_power( SystemPowerState.Booting )
+                self.__set_tcpSendHoldbackTime(20, line)
                 didSetProperty = True
             # Initialization Finished!
             elif line == "Initialization Finished!":
-                self.__set_power( SystemPowerState.On )
+                self.__set_tcpSendHoldbackTime(5, line)
+                self.__set_power( True )
                 didSetProperty = True
 
         elif len(splits) == 3:
@@ -506,8 +580,12 @@ class OreiMatrixAPI:
                 self.__set_firmware(line[11:])
 
         elif len(splits) == 4:
+            # panel button lock on
+            if line.startswith("panel button lock "):
+                didSetProperty = True
+                self.__set_panel_lock( splits[3]=="on")
             # hdmi input 1: connect
-            if splits[0] == "hdmi" and splits[1] == "input" and \
+            elif splits[0] == "hdmi" and splits[1] == "input" and \
                splits[3] in ['connect', 'disconnect']:
                 inputId = int(splits[2][0:1])
                 didSetProperty = self.__SetInputProperty( inputId, "active", splits[3]=="connect")
@@ -533,22 +611,26 @@ class OreiMatrixAPI:
             _LOGGER.info(f"TCP:<--{line!r}")
 
     async def __Handle_tcp_connection(self, reader, writer):
-        while self.__tcpSendQueue.qsize() > 0:
-            self.__tcpSendQueue.get()
-
         self.__tcpRecvBuffer = ""
 
         lastReceived = time.time()
         heartbeat = 0
-        self.__TcpSend("r status")
+
+        await self.__TcpSendDirect(writer, TCP_GETSTATUS_COMMAND )
 
         addr = writer.get_extra_info('peername')
         _LOGGER.info(f"TCP:Connected to {addr!r}")
-        self.__set_connected(True)
+        self.__set_tcpConnectState(TcpConnectedState.Connected)
+
+        self.__set_tcpSendHoldbackTime(2, "Newly connected" )
+
         try:
+            foundData = False
+
             while not self.__tcpDisconnect:
 
                 try:
+                    foundData = False
                     data = await asyncio.wait_for(reader.read(1024), timeout=0.1)
 
                     if not data:
@@ -556,6 +638,7 @@ class OreiMatrixAPI:
 
                     heartbeat = 0
                     lastReceived = time.time()
+                    foundData = True
 
                     message = data.decode()
                     self.__TcpReceive(message)
@@ -567,19 +650,31 @@ class OreiMatrixAPI:
 
                 if heartbeat > 2:
                     _LOGGER.warning("TCP:Missed HEARTBEAT")
-                    self.__set_connected(False)
+                    self.__set_tcpConnectState(TcpConnectedState.Disconnected)
                     break
                 elif now - lastReceived > 10:
                     if heartbeat == 0:
-                        self.__TcpSend("r power")
+                        # This is sent directly not enqueued since we may not be servicing the queue
+                        await self.__TcpSendDirect(writer, TCP_HEARTBEAT_COMMAND)
                         lastReceived = now
                     heartbeat += 1
 
-                while self.__tcpSendQueue.qsize() > 0:
-                    data = self.__tcpSendQueue.get()
-                    _LOGGER.debug(f"TCP:-->{data!r}")
-                    writer.write( data.encode() )
-                    await writer.drain()
+                # We only send requests if we didn't recv data this loop AND we're not holding back.
+                if not foundData and (self.__tcpSendHoldbackTime==0 or time.time() > self.__tcpSendHoldbackTime):
+                    self.__set_tcpSendHoldbackTime( 0, "Expired" )
+                    # Service the command queue only when Powered ON
+                    if self.__power:
+                        if self.__tcpSendQueue.qsize() > 0:
+                            while self.__tcpSendQueue.qsize() > 0:
+                                await self.__TcpSendDirect(writer, self.__tcpSendQueue.get(), drain=False)
+                            await writer.drain()
+
+                    elif self.__power_on_requested:
+                            self.__power_on_requested = False
+                            await self.__TcpSendDirect(writer, TCP_POWER_ON_COMMAND)
+                            # We don't want to send when we are polling all data
+                            # This will be pulled in when we see the last polled item
+                            self.__set_tcpSendHoldbackTime(20, "Power on request" )
 
         except Exception as e:
             _LOGGER.info(f"TCP:Error: {e}")
@@ -587,15 +682,19 @@ class OreiMatrixAPI:
             writer.close()
             await writer.wait_closed()
             _LOGGER.info(f"TCP:Disconnected from {addr!r}")
-            self.__set_connected(False)
+            self.__set_tcpConnectState(TcpConnectedState.Disconnected)
+            while self.__tcpSendQueue.qsize() > 0:
+                self.__tcpSendQueue.get()
 
     async def __Disconnect_tcp(self) -> None:
         _LOGGER.debug(f"TCP:Disconnecting from {self.__host}:{self.__tcpPort}")
         while self.__tcpSendQueue.qsize() > 0:
             self.__tcpSendQueue.get()
 
+        self.__set_tcpConnectState( TcpConnectedState.Disconnecting)
         self.__tcpRecvBuffer = ""
         self.__tcpDisconnect = True
+
 
     def __NotifySubscribers(self, changed_object) -> None:
         for s in self.__callbacks:
@@ -619,10 +718,7 @@ class OreiMatrixAPI:
                             jsonObj = json.loads(textVal)
 
                             if "power" in jsonObj:
-                                if jsonObj["power"]==1:
-                                    self.__set_power(SystemPowerState.On)
-                                else:
-                                    self.__set_power(SystemPowerState.Off)
+                                self.__set_power( jsonObj["power"]==1 )
 
                             return jsonObj
                         else:
@@ -639,7 +735,7 @@ class OreiMatrixAPI:
         return None
 
     def __str__(self):
-        return f"api: MAC={self.macAddress} model={self.model} tcpPort:{self.tcpPort} power:{self.__power.name} lock:{self.__panel_lock} beep:{self.__beep}"
+        return f"api: MAC={self.macAddress} model={self.model} tcpPort:{self.tcpPort} power:{self.__power} lock:{self.__panel_lock} beep:{self.__beep}"
 
     def __repr__(self):
-        return f"api: MAC={self.macAddress} model={self.model} tcpPort:{self.tcpPort} power:{self.__power.name} lock:{self.__panel_lock} beep:{self.__beep}"
+        return f"api: MAC={self.macAddress} model={self.model} tcpPort:{self.tcpPort} power:{self.__power} lock:{self.__panel_lock} beep:{self.__beep}"
