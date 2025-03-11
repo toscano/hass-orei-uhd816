@@ -52,8 +52,26 @@ class MatrixInput:
         return self.__name
 
     @property
+    def IsActive(self) -> bool:
+        return self.__active
+
+    @property
     def IsVisible(self) -> bool:
         return self.__visible
+
+    def SetProperty(self, name:str, val) -> bool:
+        if name=="edidString":
+            #self.__edid = val
+            return True
+        elif name == "active":
+            self.__active = val
+            return True
+
+        return False
+
+    @property
+    def Edid(self) -> EDID:
+        return self.__edid
 
     def __str__(self):
         return f"MatrixInput(id={self.__id} name='{self.__name}', active={self.__active}, visible={self.__visible}, edid={self.__edid.describe})"
@@ -63,20 +81,24 @@ class MatrixInput:
 
 
 class MatrixOutput:
-    __api = None
+    __api: 'OreiMatrixAPI' = None
     __id: int
     __name: str
     __inputId: int
     __visible: bool
-    __active: bool
+    __activeHDMI: bool
+    __activeHDBT: bool
+    __cable: str
 
-    def __init__(self, api, id: int, name: str, inputId: int, visible: bool, active: bool):
+    def __init__(self, api, id: int, name: str, inputId: int, visible: bool, activeHDMI: bool, activeHDBT: bool):
         self.__api = api
         self.__id = id
         self.__name = name
         self.__inputId = inputId
         self.__visible = visible
-        self.__active = active
+        self.__activeHDMI = activeHDMI
+        self.__activeHDBT = activeHDBT
+        self.__cable = ""
 
     @property
     def Id(self) -> int:
@@ -96,7 +118,36 @@ class MatrixOutput:
 
     @property
     def IsActive(self) -> bool:
-        return self.__active
+        return self.__activeHDMI or self.__activeHDBT
+
+    @property
+    def Cable(self) -> str:
+        if self.IsActive:
+            return self.__cable
+        return ""
+
+    def SetProperty(self, name:str, val) -> bool:
+        if name=="inputId":
+            self.__inputId = val
+            return True
+        elif name == "active-hdmi":
+            self.__activeHDMI = val
+            if val:
+                self.__cable = "HDMI"
+            return True
+        elif name == "active-cat":
+            self.__activeHDBT = val
+            if val:
+                self.__cable = "HDBT"
+            return True
+
+        return False
+
+    # COMMANDS
+    def CmdSelectInput(self, inputId : int) -> None:
+        self.__api.CmdSend(f"s in {inputId} av out {self.__id}")
+
+    # COMMANDS - END
 
     def __str__(self):
         return f"MatrixOutput(id={self.__id} name='{self.__name}', inputId={self.__inputId}, visible={self.__visible}, active={self.__active})"
@@ -304,26 +355,27 @@ class OreiMatrixAPI:
             self.__tcpSendHoldbackTime = time.time() + newVal
 
     # COMMANDS - BEGIN
-    def PowerOn(self) -> None:
+    def CmdPowerOn(self) -> None:
         self.__TcpVerifyConnectionState()
         self.__power_on_requested = True
 
-    def PowerOff(self) -> None:
+    def CmdPowerOff(self) -> None:
         self.__TcpSendEnqueue(TCP_POWER_OFF_COMMAND)
 
-    def PanelLockOn(self) -> None:
+    def CmdPanelLockOn(self) -> None:
         self.__TcpSendEnqueue(TCP_LOCK_ON_COMMAND)
 
-    def PanelLockOff(self) -> None:
+    def CmdPanelLockOff(self) -> None:
         self.__TcpSendEnqueue(TCP_LOCK_OFF_COMMAND)
 
-    def BeepOn(self) -> None:
+    def CmdBeepOn(self) -> None:
         self.__TcpSendEnqueue(TCP_BEEP_ON_COMMAND)
 
-    def BeepOff(self) -> None:
+    def CmdBeepOff(self) -> None:
         self.__TcpSendEnqueue(TCP_BEEP_OFF_COMMAND)
 
-
+    def CmdSend(self, msg: str) -> None:
+        self.__TcpSendEnqueue(msg)
     # COMMANDS - END
 
     def GetInputNames(self) -> list[str]:
@@ -333,12 +385,24 @@ class OreiMatrixAPI:
         return self.__inputs[inputId-1]
 
     def __SetInputProperty(self, inputId: int, name: str, val) -> bool:
-        _LOGGER.debug(f"Setting Input[{inputId}] {name}={val}")
-        return True
+        input: MatrixInput = self.__inputs[inputId-1]
+
+        if input.SetProperty(name, val):
+            self.__NotifySubscribers(input)
+            return True
+
+        _LOGGER.warning(f"Did not Set Input[{inputId}] {name}={val}")
+        return False
 
     def __SetOutputProperty(self, outputId: int, name: str, val) -> bool:
-        _LOGGER.debug(f"Setting Output[{outputId}] {name}={val}")
-        return True
+        output: MatrixOutput = self.__outputs[outputId-1]
+
+        if output.SetProperty(name, val):
+            self.__NotifySubscribers(output)
+            return True
+
+        _LOGGER.warning(f"Did not Set Output[{outputId}] {name}={val}")
+        return False
 
     async def Validate(self) -> bool:
         data = await self.__web_cmd(REQ_GET_STATUS)
@@ -427,11 +491,13 @@ class OreiMatrixAPI:
             inputId = data["allsource"][idx]
             visible = (allDefaultNames or not hasDefaultName)
 
-            active = data["allconnect"][idx]==1
+            activeHDMI = data["allconnect"][idx]==1
             if "allhdbtconnect" in data:
-                active = active or (data["allhdbtconnect"][idx]==1)
+                activeHDBT = (data["allhdbtconnect"][idx]==1)
+            else:
+                activeHDBT = False
 
-            rVal.append(MatrixOutput(self, idx+1, name, inputId, visible, active ))
+            rVal.append(MatrixOutput(self, idx+1, name, inputId, visible, activeHDMI, activeHDBT ))
             idx+=1
 
         self.__outputs = rVal
@@ -558,7 +624,7 @@ class OreiMatrixAPI:
         # input 1 edid: 4K2K60_444,HD Audio 7.1 HDR
         if len(splits) >= 4 and splits[0] == "input" and splits[2] == "edid:":
             inputId = int(splits[1])
-            didSetProperty = self.__SetInputProperty( inputId, "edid", line[14:])
+            didSetProperty = self.__SetInputProperty( inputId, "edidString", line[14:])
 
         elif len(splits) == 1:
             # IP:192.168.20.19
@@ -640,7 +706,7 @@ class OreiMatrixAPI:
             elif splits[0] in ["hdmi", "cat"] and splits[1] == "output" and \
                  splits[3] in ['connect', 'disconnect']:
                 outputId = int(splits[2][0:1])
-                didSetProperty = self.__SetOutputProperty( outputId, "active", splits[3]=="connect")
+                didSetProperty = self.__SetOutputProperty( outputId, f"active-{splits[0]}", splits[3]=="connect")
 
         elif len(splits) == 5:
             # input 4 -> output 1

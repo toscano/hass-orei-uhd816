@@ -14,13 +14,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 
 
-from .pyOreiMatrix import OreiMatrixAPI, MatrixOutput
+from .pyOreiMatrix import OreiMatrixAPI, MatrixOutput, MatrixInput
 from .const import DOMAIN, MANUFACTURER
 
 LOGGER = logging.getLogger(__package__)
-
-VIDEO_MODES = ["AUTO", "BYPASS", "4K->2K", "2K->4K", "HDBT C Mode"]
-AUDIO_DELAYS = ["0ms","90ms","180ms","270ms","360ms","450ms","540ms","630ms"]
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     """Add media_players for passed config_entry in HA."""
@@ -31,7 +28,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     new_devices = []
 
     for output in await client.Outputs:
-        # we skip video outputs without a name or those whose name starts with a dot (.)
+        # we skip video outputs that have the default name UNLESS they all have the default name
         LOGGER.debug(f"Found output[{output.Id}] Name={output.Name} Visible={output.IsVisible}.")
         if output.IsVisible:
             new_devices.append( HassMatrixOutput(hass, entry, client, output) )
@@ -42,6 +39,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
 class HassMatrixOutput(MediaPlayerEntity):
     """Our Media Player"""
+    _output: MatrixOutput
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, controller: OreiMatrixAPI, output: MatrixOutput):
         """Initialize our Media Player"""
@@ -64,8 +62,11 @@ class HassMatrixOutput(MediaPlayerEntity):
         controller.SubscribeToChanges(self.MatrixChangeHandler)
 
     def MatrixChangeHandler(self, changedObject):
-
-        self.update_ha()
+        if (type(changedObject) is OreiMatrixAPI) or \
+           (type(changedObject) is MatrixOutput and changedObject.Id==self._output.Id) or \
+           (type(changedObject) is MatrixInput and changedObject.Id==self._output.InputId):
+            # LOGGER.debug(f"UPDATE:{self._name} due to {changedObject}")
+            self.update_ha()
 
     def update_ha(self):
         try:
@@ -122,40 +123,41 @@ class HassMatrixOutput(MediaPlayerEntity):
     @property
     def source_list(self):
         # List of available input sources.
-        # TODO
         return self._controller.GetInputNames()
 
-'''
     async def async_select_source(self, source):
         # Select input source.
-        index = self._controller.video_inputs.index(source)+1
-        await self._controller.async_send(f"SET OUT{self._index} {self._output_type}S IN{index}")
+        index = self._controller.GetInputNames().index(source)+1
+        self._output.CmdSelectInput(index)
 
     async def async_turn_on(self):
-        # Turn the media player on.
-        await self._controller.async_send(f"SET OUT{self._index} STREAM ON")
-
-        # Reset our input signal please
-        if self._sourceIndex != -1:
-            await self._controller.async_send(f"A00 SET IN{self._sourceIndex} RST")
+        self._controller.CmdPowerOn()
 
     async def async_turn_off(self):
-        await self._controller.async_send(f"SET OUT{self._index} STREAM OFF")
+        self._controller.CmdPowerOff()
 
     @property
     def extra_state_attributes(self):
         """Return extra state attributes."""
-        self._attr_app_name = output.
+        input: MatrixInput = self._controller.GetInput(self._output.InputId)
 
-        if self._isOn:
-            self._extra_attributes['input_index']=self._sourceIndex+1
-            self._extra_attributes['input_has_signal']= (self._controller._inputSignals[self._sourceIndex]==1)
+        self._attr_app_name = input.Name
+
+        if self._controller.power:
+            self._extra_attributes['input_id']=input.Id
+            self._extra_attributes['input_has_signal']= input.IsActive
+            self._extra_attributes['output_has_link'] = self._output.IsActive
+            self._extra_attributes['output_cable_type'] = self._output.Cable
         else:
-            self._extra_attributes['input_index']=0
+            self._extra_attributes['input_id']=0
             self._extra_attributes['input_has_signal']= False
+            self._extra_attributes['output_has_link'] = False
+            self._extra_attributes['output_cable_type']=""
 
         # Useful for making sensors
-        return self._extra_attributes'
+        return self._extra_attributes
+
+'''
 
     async def async_mute_volume(self, mute: bool) -> None:
         """Engage AVR mute."""

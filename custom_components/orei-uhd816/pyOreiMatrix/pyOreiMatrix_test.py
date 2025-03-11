@@ -68,29 +68,29 @@ async def main():
 
     #for output in await api.Outputs:
     #    _LOGGER.info(f"   {output}")
-    api.PowerOn()
+    api.CmdPowerOn()
     if not await wait_for_true(lambda: api.power, timeout=10):
         _LOGGER.error("Power on failed.")
         exit(400)
 
     #await asyncio.sleep(3)
 
-    api.PanelLockOn()
+    api.CmdPanelLockOn()
     if not await wait_for_true(lambda: api.panel_lock, timeout=10):
         _LOGGER.error("LockOn failed.")
         exit(400)
 
-    api.PanelLockOff()
+    api.CmdPanelLockOff()
     if not await wait_for_true(lambda: not api.panel_lock, timeout=10):
         _LOGGER.error("LockOff failed.")
         exit(400)
 
-    api.BeepOn()
+    api.CmdBeepOn()
     if not await wait_for_true(lambda: api.beep, timeout=10):
         _LOGGER.error("BeepOn failed.")
         exit(400)
 
-    api.BeepOff()
+    api.CmdBeepOff()
     if not await wait_for_true(lambda: not api.beep, timeout=10):
         _LOGGER.error("BeepOff failed.")
         exit(400)
@@ -102,7 +102,7 @@ async def main():
     await asyncio.sleep(20)
 
 
-    api.PowerOff()
+    api.CmdPowerOff()
     if not await wait_for_true(lambda: not api.power, timeout=10):
         _LOGGER.error("Power off failed.")
         exit(400)
