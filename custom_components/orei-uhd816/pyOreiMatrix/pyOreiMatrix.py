@@ -2,7 +2,7 @@ import asyncio
 import aiohttp
 import json
 import logging
-from pyOreiMatrixEnums import EDID, TcpConnectedState
+from .pyOreiMatrixEnums import EDID, TcpConnectedState
 import queue
 import time
 
@@ -42,6 +42,19 @@ class MatrixInput:
         self.__visible = visible
         self.__edid = edid
 
+
+    @property
+    def Id(self) -> int:
+        return self.__id
+
+    @property
+    def Name(self) -> str:
+        return self.__name
+
+    @property
+    def IsVisible(self) -> bool:
+        return self.__visible
+
     def __str__(self):
         return f"MatrixInput(id={self.__id} name='{self.__name}', active={self.__active}, visible={self.__visible}, edid={self.__edid.describe})"
 
@@ -64,6 +77,26 @@ class MatrixOutput:
         self.__inputId = inputId
         self.__visible = visible
         self.__active = active
+
+    @property
+    def Id(self) -> int:
+        return self.__id
+
+    @property
+    def Name(self) -> str:
+        return self.__name
+
+    @property
+    def InputId(self) -> int:
+        return self.__inputId
+
+    @property
+    def IsVisible(self) -> bool:
+        return self.__visible
+
+    @property
+    def IsActive(self) -> bool:
+        return self.__active
 
     def __str__(self):
         return f"MatrixOutput(id={self.__id} name='{self.__name}', inputId={self.__inputId}, visible={self.__visible}, active={self.__active})"
@@ -125,6 +158,7 @@ class OreiMatrixAPI:
         self.__tcpSendQueue = queue.Queue()
         self.__tcpRecvBuffer = ""
         self.__tcpDisconnect = True
+        self.__power_on_requested = False
 
     @property
     def model(self) -> str:
@@ -247,6 +281,10 @@ class OreiMatrixAPI:
             self.__NotifySubscribers(self)
 
     @property
+    def IsConnected(self) -> TcpConnectedState:
+        return self.__tcpConnectState == TcpConnectedState.Connected
+
+    @property
     def tcpConnectState(self) -> TcpConnectedState:
         return self.__tcpConnectState
 
@@ -288,6 +326,11 @@ class OreiMatrixAPI:
 
     # COMMANDS - END
 
+    def GetInputNames(self) -> list[str]:
+        return [input.Name for input in self.__inputs if input.IsVisible]
+
+    def GetInput(self, inputId: int) -> MatrixInput:
+        return self.__inputs[inputId-1]
 
     def __SetInputProperty(self, inputId: int, name: str, val) -> bool:
         _LOGGER.debug(f"Setting Input[{inputId}] {name}={val}")
@@ -300,7 +343,7 @@ class OreiMatrixAPI:
     async def Validate(self) -> bool:
         data = await self.__web_cmd(REQ_GET_STATUS)
         if data is None:
-            _LOGGER.error(f"Matrix status not found at {self.host}:{self.webPort}.")
+            _LOGGER.error(f"Matrix status not found at {self.host}.")
             return False
 
         if "macaddress" not in data:
@@ -312,9 +355,12 @@ class OreiMatrixAPI:
         if "model" in data:
             self.__set_model(data["model"])
 
+        if "version" in data:
+            self.__set_firmware(data["version"])
+
         data = await self.__web_cmd(REQ_GET_NETWORK)
         if data is None:
-            _LOGGER.error(f"Matrix not found at {self.host}:{self.webPort}.")
+            _LOGGER.error(f"Matrix not found at {self.host}.")
             return False
 
         if "tcpport" not in data:
@@ -677,7 +723,8 @@ class OreiMatrixAPI:
                             self.__set_tcpSendHoldbackTime(20, "Power on request" )
 
         except Exception as e:
-            _LOGGER.info(f"TCP:Error: {e}")
+            _LOGGER.info(e, exc_info=True)
+
         finally:
             writer.close()
             await writer.wait_closed()

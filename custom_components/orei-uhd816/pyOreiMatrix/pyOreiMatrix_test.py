@@ -46,6 +46,7 @@ async def main():
 
     await api.RefreshAll()
     _LOGGER.info(f"{api}")
+    _LOGGER.info(f"{api.InputNames!r}")
 
     api.SubscribeToChanges(MatrixChangeHandler)
 

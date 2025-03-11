@@ -1,0 +1,16 @@
+{
+    "domain": "orei-uhd816",
+    "name": "OREI AV Matrix switch",
+    "codeowners": ["@toscano"],
+    "config_flow": true,
+    "dependencies": [],
+    "documentation": "https://github.com/toscano/hass-orei-uhd816",
+    "issue_tracker": "https://github.com/toscano/hass-orei-uhd816/issues",
+    "homekit": {},
+    "iot_class": "local_push",
+    "integration_type": "device",
+    "requirements": [],
+    "ssdp": [],
+    "zeroconf": [],
+    "version": "2025.03.0"
+  }

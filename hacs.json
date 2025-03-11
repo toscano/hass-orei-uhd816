@@ -1,0 +1,8 @@
+{
+    "name": "OREI UHD816 Matrix Switch",
+    "hacs": "1.6.0",
+    "domains": [
+        "media_player"
+    ],
+    "homeassistant": "2024.12.0"
+}
