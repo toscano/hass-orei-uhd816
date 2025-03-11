@@ -46,7 +46,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # details
     LOGGER.info(f"Unloading a Matrix switch {entry.data}")
     client = hass.data[DOMAIN][entry.entry_id]
-    await client.async_ws_close()
+    await client.Shutdown()
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:

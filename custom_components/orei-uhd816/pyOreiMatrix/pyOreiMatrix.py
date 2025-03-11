@@ -20,6 +20,8 @@ TCP_BEEP_ON_COMMAND     = "s beep 1"
 TCP_BEEP_OFF_COMMAND    = "s beep 0"
 TCP_COMMAND_DELIMITER   = "!\r\n"
 TCP_GETSTATUS_COMMAND   = "r status"
+TCP_GET_CAT_STREAM_COMMAND   = "r cat 0 stream"
+TCP_GET_HDMI_STREAM_COMMAND   = "r hdmi 0 stream"
 TCP_HEARTBEAT_COMMAND   = "r power"
 TCP_LOCK_ON_COMMAND     = "s lock 1"
 TCP_LOCK_OFF_COMMAND    = "s lock 0"
@@ -86,19 +88,23 @@ class MatrixOutput:
     __name: str
     __inputId: int
     __visible: bool
-    __activeHDMI: bool
-    __activeHDBT: bool
+    __hasLinkHDMI: bool
+    __hasLinkHDBT: bool
     __cable: str
+    __streamEnabledHDMI: bool
+    __streamEnabledHDBT: bool
 
-    def __init__(self, api, id: int, name: str, inputId: int, visible: bool, activeHDMI: bool, activeHDBT: bool):
+    def __init__(self, api, id: int, name: str, inputId: int, visible: bool, activeHDMI: bool, activeHDBT: bool, enabledHDMI: bool, enabledHDBT):
         self.__api = api
         self.__id = id
         self.__name = name
         self.__inputId = inputId
         self.__visible = visible
-        self.__activeHDMI = activeHDMI
-        self.__activeHDBT = activeHDBT
+        self.__hasLinkHDMI = activeHDMI
+        self.__hasLinkHDBT = activeHDBT
         self.__cable = ""
+        self.__streamEnabledHDMI = enabledHDMI
+        self.__streamEnabledHDBT = enabledHDBT
 
     @property
     def Id(self) -> int:
@@ -117,12 +123,16 @@ class MatrixOutput:
         return self.__visible
 
     @property
-    def IsActive(self) -> bool:
-        return self.__activeHDMI or self.__activeHDBT
+    def HasLink(self) -> bool:
+        return self.__hasLinkHDMI or self.__hasLinkHDBT
+
+    @property
+    def StreamEnabled(self) -> bool:
+        return self.__streamEnabledHDMI and self.__streamEnabledHDBT
 
     @property
     def Cable(self) -> str:
-        if self.IsActive:
+        if self.HasLink:
             return self.__cable
         return ""
 
@@ -130,15 +140,21 @@ class MatrixOutput:
         if name=="inputId":
             self.__inputId = val
             return True
-        elif name == "active-hdmi":
-            self.__activeHDMI = val
+        elif name == "link-hdmi":
+            self.__hasLinkHDMI = val
             if val:
                 self.__cable = "HDMI"
             return True
-        elif name == "active-cat":
-            self.__activeHDBT = val
+        elif name == "link-cat":
+            self.__hasLinkHDBT = val
             if val:
                 self.__cable = "HDBT"
+            return True
+        elif name == "stream-hdmi":
+            self.__streamEnabledHDMI = val
+            return True
+        elif name == "stream-cat":
+            self.__streamEnabledHDBT = val
             return True
 
         return False
@@ -146,6 +162,10 @@ class MatrixOutput:
     # COMMANDS
     def CmdSelectInput(self, inputId : int) -> None:
         self.__api.CmdSend(f"s in {inputId} av out {self.__id}")
+
+    def CmdSetOutputStream(self, on: bool) -> None:
+        self.__api.CmdSend(f"s cat {self.Id} stream {1 if on else 0}")
+        self.__api.CmdSend(f"s hdmi {self.Id} stream {1 if on else 0}")
 
     # COMMANDS - END
 
@@ -378,8 +398,8 @@ class OreiMatrixAPI:
         self.__TcpSendEnqueue(msg)
     # COMMANDS - END
 
-    def GetInputNames(self) -> list[str]:
-        return [input.Name for input in self.__inputs if input.IsVisible]
+    def GetInputNames(self, all:bool=False) -> list[str]:
+        return [input.Name for input in self.__inputs if all or input.IsVisible]
 
     def GetInput(self, inputId: int) -> MatrixInput:
         return self.__inputs[inputId-1]
@@ -497,7 +517,17 @@ class OreiMatrixAPI:
             else:
                 activeHDBT = False
 
-            rVal.append(MatrixOutput(self, idx+1, name, inputId, visible, activeHDMI, activeHDBT ))
+            if "allout" in data:
+                enabledHDMI = data["allout"][idx]==1
+            else:
+                enabledHDMI = True
+
+            if "allhdbtout" in data:
+                enabledHDBT = data["allhdbtout"][idx] == 1
+            else:
+                enabledHDBT = False
+
+            rVal.append(MatrixOutput(self, idx+1, name, inputId, visible, activeHDMI, activeHDBT, enabledHDMI, enabledHDBT ))
             idx+=1
 
         self.__outputs = rVal
@@ -549,6 +579,10 @@ class OreiMatrixAPI:
         if len(self.__callbacks) == 0:
             asyncio.create_task( self.__Disconnect_tcp() )
 
+    async def Shutdown(self) ->None:
+        self.__callbacks.clear()
+        await self.__Disconnect_tcp()
+
     async def __Connect_tcp(self) -> None:
 
         if self.__tcpConnectState in [TcpConnectedState.Connected, TcpConnectedState.Connecting]:
@@ -583,7 +617,7 @@ class OreiMatrixAPI:
         if verifyConnection:
             self.__TcpVerifyConnectionState()
 
-        self.__tcpSendQueue.put(f"{m}{TCP_COMMAND_DELIMITER}")
+        self.__tcpSendQueue.put(m)
 
     async def __TcpSendDirect(self, writer, m: str, drain: bool = True) -> None:
         data = f"{m}{TCP_COMMAND_DELIMITER}"
@@ -706,7 +740,7 @@ class OreiMatrixAPI:
             elif splits[0] in ["hdmi", "cat"] and splits[1] == "output" and \
                  splits[3] in ['connect', 'disconnect']:
                 outputId = int(splits[2][0:1])
-                didSetProperty = self.__SetOutputProperty( outputId, f"active-{splits[0]}", splits[3]=="connect")
+                didSetProperty = self.__SetOutputProperty( outputId, f"link-{splits[0]}", splits[3]=="connect")
 
         elif len(splits) == 5:
             # input 4 -> output 1
@@ -717,6 +751,15 @@ class OreiMatrixAPI:
             # Get the unit all status:
             elif line == "Get the unit all status:":
                 ignored = True
+            # Enable cat output 2 stream
+            # Disable cat output 2 stream
+            # Disable cat output 2 stream
+            elif splits[0].lower() in ['enable', 'disable'] and \
+                 splits[1].lower() in ['hdmi', 'cat'] and \
+                 splits[2] == 'output' and \
+                 splits[4] == 'stream':
+                outputId = int(splits[3])
+                didSetProperty = self.__SetOutputProperty( outputId, f"stream-{splits[1]}", splits[0].lower()=="enable")
 
         # Output Stuff
         if not ignored and not didSetProperty:
@@ -729,6 +772,8 @@ class OreiMatrixAPI:
         heartbeat = 0
 
         await self.__TcpSendDirect(writer, TCP_GETSTATUS_COMMAND )
+        self.__TcpSendEnqueue( TCP_GET_CAT_STREAM_COMMAND )
+        self.__TcpSendEnqueue( TCP_GET_HDMI_STREAM_COMMAND )
 
         addr = writer.get_extra_info('peername')
         _LOGGER.info(f"TCP:Connected to {addr!r}")
@@ -777,9 +822,8 @@ class OreiMatrixAPI:
                     # Service the command queue only when Powered ON
                     if self.__power:
                         if self.__tcpSendQueue.qsize() > 0:
-                            while self.__tcpSendQueue.qsize() > 0:
-                                await self.__TcpSendDirect(writer, self.__tcpSendQueue.get(), drain=False)
-                            await writer.drain()
+                            # Not the whole queue so we don't overwhelm the device
+                            await self.__TcpSendDirect(writer, self.__tcpSendQueue.get())
 
                     elif self.__power_on_requested:
                             self.__power_on_requested = False

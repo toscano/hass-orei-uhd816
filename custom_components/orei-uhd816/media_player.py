@@ -70,6 +70,9 @@ class HassMatrixOutput(MediaPlayerEntity):
 
     def update_ha(self):
         try:
+            input: MatrixInput = self._controller.GetInput(self._output.InputId)
+            self._attr_app_name = input.Name
+
             self.schedule_update_ha_state()
         except Exception as error:  # pylint: disable=broad-except
             LOGGER.debug(f"State update failed. {error}")
@@ -113,7 +116,7 @@ class HassMatrixOutput(MediaPlayerEntity):
                 | MediaPlayerEntityFeature.TURN_ON \
                 | MediaPlayerEntityFeature.TURN_OFF \
                 | MediaPlayerEntityFeature.VOLUME_MUTE \
-                | MediaPlayerEntityFeature.VOLUME_SET
+                | MediaPlayerEntityFeature.VOLUME_SET # Silly but we need this for mute
 
     @property
     def source(self) -> str | None:
@@ -125,9 +128,22 @@ class HassMatrixOutput(MediaPlayerEntity):
         # List of available input sources.
         return self._controller.GetInputNames()
 
+    @property
+    def volume_level(self) -> float | None:
+        self._attr_volume_level = 1.0
+        return self._attr_volume_level
+
+    @property
+    def is_volume_muted(self) -> bool | None:
+        # Boolean if volume is currently muted.
+        self._attr_is_volume_muted = not self._output.StreamEnabled
+        return self._attr_is_volume_muted
+
     async def async_select_source(self, source):
         # Select input source.
-        index = self._controller.GetInputNames().index(source)+1
+        names = self._controller.GetInputNames(all=True)
+        index = names.index(source)+1
+
         self._output.CmdSelectInput(index)
 
     async def async_turn_on(self):
@@ -146,7 +162,7 @@ class HassMatrixOutput(MediaPlayerEntity):
         if self._controller.power:
             self._extra_attributes['input_id']=input.Id
             self._extra_attributes['input_has_signal']= input.IsActive
-            self._extra_attributes['output_has_link'] = self._output.IsActive
+            self._extra_attributes['output_has_link'] = self._output.HasLink
             self._extra_attributes['output_cable_type'] = self._output.Cable
         else:
             self._extra_attributes['input_id']=0
@@ -157,14 +173,11 @@ class HassMatrixOutput(MediaPlayerEntity):
         # Useful for making sensors
         return self._extra_attributes
 
-'''
-
     async def async_mute_volume(self, mute: bool) -> None:
         """Engage AVR mute."""
-        LOGGER.error(f"MUTE ME {mute}")
+        self._output.CmdSetOutputStream(not mute)
 
     async def async_set_volume_level(self, volume: float) -> None:
         """Set AVR volume (0 to 1)."""
-        LOGGER.error(f"VOLUME ME {volume}")
-
-'''
+        LOGGER.debug("Volume is only here to support Mute.")
+        self._attr_volume_level = 1.0
