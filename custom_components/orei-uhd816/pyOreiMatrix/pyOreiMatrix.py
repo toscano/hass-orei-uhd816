@@ -588,13 +588,12 @@ class OreiMatrixAPI:
         if self.__tcpConnectState in [TcpConnectedState.Connected, TcpConnectedState.Connecting]:
             return
 
-        self.__set_tcpConnectState( TcpConnectedState.Connecting )
-
         retry_delay = 5
         self.__tcpDisconnect = False
 
         while not self.__tcpDisconnect:
             try:
+                self.__set_tcpConnectState( TcpConnectedState.Connecting )
                 _LOGGER.debug(f"TCP:Connecting to {self.__host}:{self.__tcpPort}")
                 reader, writer = await asyncio.open_connection(self.__host, self.__tcpPort)
             except (ConnectionRefusedError, OSError) as e:
