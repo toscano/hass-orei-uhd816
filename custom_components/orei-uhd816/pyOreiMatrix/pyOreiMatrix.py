@@ -230,6 +230,7 @@ class OreiMatrixAPI:
         self.__tcpRecvBuffer = ""
         self.__tcpDisconnect = True
         self.__power_on_requested = False
+        self.__power_off_requested = False
 
     @property
     def model(self) -> str:
@@ -377,10 +378,13 @@ class OreiMatrixAPI:
     # COMMANDS - BEGIN
     def CmdPowerOn(self) -> None:
         self.__TcpVerifyConnectionState()
+        self.__power_off_requested = False
         self.__power_on_requested = True
 
     def CmdPowerOff(self) -> None:
-        self.__TcpSendEnqueue(TCP_POWER_OFF_COMMAND)
+        self.__TcpVerifyConnectionState()
+        self.__power_on_requested = False
+        self.__power_off_requested = True
 
     def CmdPanelLockOn(self) -> None:
         self.__TcpSendEnqueue(TCP_LOCK_ON_COMMAND)
@@ -823,9 +827,17 @@ class OreiMatrixAPI:
                         if self.__tcpSendQueue.qsize() > 0:
                             # Not the whole queue so we don't overwhelm the device
                             await self.__TcpSendDirect(writer, self.__tcpSendQueue.get())
-
-                    elif self.__power_on_requested:
+                        elif self.__power_off_requested:
                             self.__power_on_requested = False
+                            self.__power_off_requested = False
+                            await self.__TcpSendDirect(writer, TCP_POWER_OFF_COMMAND)
+
+                    else: # We must be powered off
+                        self.__power_off_requested = False
+
+                        if self.__power_on_requested:
+                            self.__power_on_requested = False
+                            self.__power_off_requested = False
                             await self.__TcpSendDirect(writer, TCP_POWER_ON_COMMAND)
                             # We don't want to send when we are polling all data
                             # This will be pulled in when we see the last polled item
