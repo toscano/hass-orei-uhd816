@@ -140,6 +140,10 @@ class HassMatrixOutput(MediaPlayerEntity):
         return self._attr_is_volume_muted
 
     async def async_select_source(self, source):
+        # Make sure that we're ON
+        if not self._controller.power:
+            self._controller.CmdPowerOn()
+
         # Select input source.
         names = self._controller.GetInputNames(all=True)
         index = names.index(source)+1
