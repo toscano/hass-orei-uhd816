@@ -140,15 +140,23 @@ class HassMatrixOutput(MediaPlayerEntity):
         return self._attr_is_volume_muted
 
     async def async_select_source(self, source):
-        # Make sure that we're ON
-        if not self._controller.power:
-            self._controller.CmdPowerOn()
+        # Do nothing if we're already there
+        if source == self.source:
+            LOGGER.debug(f"Skipped setting identical source ('{self.source}').")
+        else:
+            # Select input source.
+            names = self._controller.GetInputNames(all=True)
 
-        # Select input source.
-        names = self._controller.GetInputNames(all=True)
-        index = names.index(source)+1
+            if source in names:
+                index = names.index(source)
 
-        self._output.CmdSelectInput(index)
+                # Make sure that we're ON
+                if not self._controller.power:
+                    self._controller.CmdPowerOn()
+
+                self._output.CmdSelectInput(index+1)
+            else:
+                raise ValueError(f"'{source}' is not a valid source.")
 
     async def async_turn_on(self):
         self._controller.CmdPowerOn()
