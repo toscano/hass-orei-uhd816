@@ -5,7 +5,6 @@ from homeassistant.components.media_player import (
     MediaPlayerEntity,
     MediaPlayerEntityFeature,
     MediaPlayerState
-    #REMOVE ATTR_TO_PROPERTY
 )
 
 from homeassistant.config_entries import ConfigEntry
