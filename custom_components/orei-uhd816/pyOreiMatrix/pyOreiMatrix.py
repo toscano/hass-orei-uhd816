@@ -14,7 +14,13 @@ REQ_GET_INPUTS  = {"comhead":"get input status","language":0}
 REQ_GET_OUTPUTS = {"comhead":"get output status","language":0}
 REQ_GET_SYSTEM  = {"comhead":"get system status","language":0}
 
-SUPPORTED_MODELS = ['HDP-MXB88D70M']
+# The HDP-MXB88D70M and the OREI UHD816-EX230-K are virtually identical
+# 18Gbps 8x8 HDMI matrix switchers with mirrored CAT outputs, sharing the
+# exact same core hardware architecture, 4K@60Hz (YUV 4:4:4) capabilities,
+# and 230-foot (70m) extension range. They are white-labeled variations of
+# the same underlying manufacturing design distributed under different branding.
+
+SUPPORTED_MODELS = ['HDP-MXB88D70M','UHD816-EX230-K']
 
 TCP_BEEP_ON_COMMAND     = "s beep 1"
 TCP_BEEP_OFF_COMMAND    = "s beep 0"
